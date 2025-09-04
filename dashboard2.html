@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dashboard ESP32 MQTT</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+  <div class="bg-white rounded-xl shadow-2xl p-8 w-full max-w-lg text-center">
+    <h1 class="text-3xl font-bold mb-6">📊 Dati ESP32 in tempo reale</h1>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="p-4 bg-blue-100 rounded-lg">
+        <h2 class="text-lg font-semibold">Temperatura</h2>
+        <p id="temp" class="text-2xl font-bold">-- °C</p>
+      </div>
+      <div class="p-4 bg-green-100 rounded-lg">
+        <h2 class="text-lg font-semibold">Umidità</h2>
+        <p id="hum" class="text-2xl font-bold">-- %</p>
+      </div>
+    </div>
+
+    <p class="text-sm text-gray-500 mt-6">Ultimo aggiornamento: <span id="last">--</span></p>
+  </div>
+
+  <script>
+    const client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt');
+
+    client.on('connect', () => {
+      client.subscribe('esp32/ponte/data');
+    });
+
+    client.on('message', (topic, message) => {
+      const data = JSON.parse(message.toString());
+      document.getElementById('temp').textContent = data.temperature.toFixed(1) + ' °C';
+      document.getElementById('hum').textContent = data.humidity.toFixed(1) + ' %';
+      document.getElementById('last').textContent = new Date().toLocaleTimeString();
+    });
+  </script>
+</body>
+</html>
