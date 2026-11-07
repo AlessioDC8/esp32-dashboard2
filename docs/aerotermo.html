@@ -1,0 +1,409 @@
+Il registro delle letture lo vorrei in forma grafica con assi cartesiani
+Il registro è un grafico con gli assi. In orizzontale c’è l’ora, a sinistra la temperatura in °C, a destra l’umidità. La linea tratteggiata è il setpoint attuale e il punto pieno indica il relè acceso. Sono le ultime 24 letture salvate sull’ESP32.
+
+In ufficio, dopo aver caricato il firmware della 
+PR #4 (commit b7b64a4), apri http://aerotermo.local/ dalla Wi-Fi Fritz e scorri fino a Registro. È la pagina da dare ai dipendenti.
+
+Sulla pagina pubblica che hai già aperto il grafico non c’è ancora: da qui non posso aggiornare quel repository. Le impostazioni da fuori (setpoint, orari, posizione, forzatura) sono nella pagina nuova e chiedono il PIN, lo stesso dell’ufficio. Senza il PIN giusto l’apparecchio non cambia nulla.
+
+Per sostituire la pagina pubblica:
+
+Apri il file già creato: docs/aerotermo.html.
+
+A destra del nome del file premi l’icona della matita (Edit). Non è tra Issues e Pull requests.
+
+Nel riquadro grande seleziona tutto il testo, cancellalo e incolla il codice qui sotto.
+
+In basso lascia Commit directly to the main branch e premi Commit changes.
+
+Dopo un minuto ricarica alessiodc8.github.io/esp32-dashboard2/aerotermo.html. Il grafico e i comandi restano vuoti finché l’ESP32 non esegue quel firmware. Il PIN di fabbrica è 1234: sul broker pubblico viaggia in chiaro, quindi conviene cambiarlo e non riusarlo altrove. Ai dipendenti non dare questo indirizzo.
+
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aerotermo Sommaia</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f3f0e8;
+      color: #1c1915;
+      font: 16px/1.45 "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    main { max-width: 560px; margin: 0 auto; padding: 20px 16px 40px; }
+    .kicker { margin: 0; font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; color: #9a3b1a; }
+    h1 { margin: 4px 0 0; font-size: 1.8rem; letter-spacing: -0.02em; }
+    h2 { margin: 0 0 8px; font-size: 1.05rem; }
+    .lead, .note, .hint { color: #5c564c; }
+    .note {
+      background: #fff4d6;
+      border: 1px solid #ead7a1;
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin: 14px 0;
+    }
+    .conn, #cmd { font-weight: 650; margin: 0 0 12px; }
+    .conn.wait, #cmd.wait { color: #6a4b00; }
+    .conn.ok, #cmd.ok { color: #1f7a46; }
+    .conn.bad, #cmd.bad { color: #8a2418; }
+    .pair, .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .card, section {
+      background: #fffdf8;
+      border: 1px solid #e4ddd0;
+      border-radius: 16px;
+      padding: 14px;
+      margin: 0 0 10px;
+    }
+    .label { margin: 0; color: #6b655c; font-size: 0.82rem; }
+    .hero { margin: 2px 0 0; font-size: 2.15rem; font-weight: 750; letter-spacing: -0.03em; line-height: 1.05; }
+    .value { margin: 2px 0 0; font-size: 1.35rem; font-weight: 650; }
+    .relay { color: #fff; border: 0; }
+    .relay.on { background: #1f7a46; }
+    .relay.off { background: #5e584f; }
+    .relay .label, .relay p { color: #fff; }
+    .big { margin: 2px 0; font-size: 2rem; font-weight: 750; letter-spacing: 0.04em; }
+    .hint { margin: 8px 0 0; font-size: 0.85rem; }
+    .chart { width: 100%; height: auto; display: block; background: #fff; border-radius: 12px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0 0; color: #5c564c; font-size: 0.82rem; }
+    .swatch, .dot { display: inline-block; margin-right: 5px; vertical-align: middle; }
+    .swatch { width: 16px; height: 3px; }
+    .swatch.temp { background: #9a3b1a; }
+    .swatch.hum { background: #2c6e9b; }
+    .swatch.set { height: 0; border-top: 2px dashed #9a3b1a; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #1f7a46; }
+    label { display: block; margin: 10px 0 4px; font-size: 0.88rem; }
+    input {
+      width: 100%; min-height: 44px; padding: 8px 10px;
+      border: 1px solid #d9d0c3; border-radius: 10px; background: #fff; font: inherit;
+    }
+    button {
+      margin-top: 12px; width: 100%; min-height: 44px; border: 0; border-radius: 10px;
+      background: #9a3b1a; color: #fff; font: inherit; font-weight: 650;
+    }
+    button.secondary { background: #3d3832; }
+    button.ghost { background: transparent; color: #3d3832; border: 1px solid #cfc6b8; }
+    @media (max-width: 380px) {
+      .hero { font-size: 1.7rem; }
+      .row2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <p class="kicker">Decora · Sommaia</p>
+  <h1>Aerotermo</h1>
+  <p class="lead">Stato e impostazioni, anche fuori dall'ufficio.</p>
+  <p class="note">Le modifiche chiedono il PIN. In ufficio i dipendenti usano la pagina sulla Wi-Fi Fritz, non questo indirizzo.</p>
+  <p id="conn" class="conn wait">Connessione in corso…</p>
+  <div class="pair">
+    <div class="card">
+      <p class="label">Temperatura</p>
+      <p id="temp" class="hero">—</p>
+    </div>
+    <div class="card">
+      <p class="label">Setpoint</p>
+      <p id="setpoint" class="hero">—</p>
+    </div>
+  </div>
+  <div class="pair">
+    <div class="card">
+      <p class="label">Umidità</p>
+      <p id="hum" class="value">—</p>
+    </div>
+    <div class="card">
+      <p class="label">Minima mattutina</p>
+      <p id="weather" class="value">—</p>
+    </div>
+  </div>
+  <div id="relayCard" class="card relay off">
+    <p class="label">Relè</p>
+    <p id="relay" class="big">—</p>
+    <p id="reason"></p>
+  </div>
+  <div class="card">
+    <p class="label">Ora sull'apparecchio</p>
+    <p id="time" class="value">—</p>
+    <p class="hint">Ultimo messaggio: <span id="last">—</span></p>
+  </div>
+  <section>
+    <h2>Registro</h2>
+    <p class="label">Asse orizzontale: ora. Asse sinistro: temperatura °C. Asse destro: umidità %. La linea tratteggiata è il setpoint attuale. Il punto pieno è il relè acceso.</p>
+    <svg id="chart" class="chart" viewBox="0 0 360 240" role="img" aria-label="Grafico delle letture"></svg>
+    <p class="legend">
+      <span><i class="swatch temp"></i>Temperatura</span>
+      <span><i class="swatch hum"></i>Umidità</span>
+      <span><i class="swatch set"></i>Setpoint</span>
+      <span><i class="dot"></i>Relè acceso</span>
+    </p>
+    <p id="logEmpty" class="label">In attesa delle letture.</p>
+  </section>
+  <section>
+    <h2>Impostazioni</h2>
+    <label for="pin">PIN</label>
+    <input id="pin" inputmode="numeric" maxlength="4" autocomplete="off">
+    <form id="form-heat">
+      <label for="setpointIn">Setpoint °C</label>
+      <input id="setpointIn" inputmode="decimal" required>
+      <div class="row2">
+        <div>
+          <label for="onTime">Accensione</label>
+          <input id="onTime" type="time" required>
+        </div>
+        <div>
+          <label for="offTime">Spegnimento</label>
+          <input id="offTime" type="time" required>
+        </div>
+      </div>
+      <label for="newPin">Nuovo PIN, vuoto se non lo cambi</label>
+      <input id="newPin" inputmode="numeric" maxlength="4" autocomplete="off">
+      <button type="submit">Salva setpoint e orario</button>
+    </form>
+  </section>
+  <section>
+    <h2>Posizione per il meteo</h2>
+    <form id="form-loc">
+      <div class="row2">
+        <div>
+          <label for="latitude">Latitudine</label>
+          <input id="latitude" inputmode="decimal" placeholder="43,8631">
+        </div>
+        <div>
+          <label for="longitude">Longitudine</label>
+          <input id="longitude" inputmode="decimal" placeholder="11,1893">
+        </div>
+      </div>
+      <button type="submit">Salva posizione</button>
+    </form>
+    <button id="clearLoc" class="ghost" type="button">Cancella posizione</button>
+  </section>
+  <section>
+    <h2>Forzatura</h2>
+    <p class="hint">Forza acceso resta finché non premi Spegni. Spegni annulla solo la forzatura.</p>
+    <div class="row2">
+      <button id="forceOn" type="button">Forza acceso</button>
+      <button id="forceOff" class="secondary" type="button">Spegni</button>
+    </div>
+    <p id="cmd" class="wait"></p>
+  </section>
+</main>
+<script>
+  const TOPIC = "esp32/decora/sommaia/stato";
+  const COMMAND = "esp32/decora/sommaia/comando";
+  const conn = document.getElementById("conn");
+  const cmd = document.getElementById("cmd");
+
+  function setConn(text, kind) {
+    conn.textContent = text;
+    conn.className = "conn " + kind;
+  }
+  function setCmd(text, kind) {
+    cmd.textContent = text;
+    cmd.className = kind;
+  }
+  function num(value, digits, unit) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "n.d.";
+    return n.toFixed(digits).replace(".", ",") + unit;
+  }
+  function axisTime(epoch) {
+    if (!epoch || epoch < 1700000000) return "senza ora";
+    return new Intl.DateTimeFormat("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(epoch * 1000));
+  }
+  function niceStep(span, count) {
+    const raw = span / count;
+    const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    const n = raw / pow;
+    const f = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    return f * pow;
+  }
+  function drawChart(list, setpoint) {
+    const svg = document.getElementById("chart");
+    const ns = "http://www.w3.org/2000/svg";
+    svg.replaceChildren();
+    const W = 360, H = 240, L = 42, R = 42, T = 16, B = 36;
+    const plotW = W - L - R, plotH = H - T - B;
+    const temps = list.map((p) => p.temp).filter((v) => Number.isFinite(v));
+    const hums = list.map((p) => p.hum).filter((v) => Number.isFinite(v));
+    if (!list.length || (!temps.length && !hums.length)) return false;
+    let tMin = temps.length ? Math.min.apply(null, temps) : setpoint;
+    let tMax = temps.length ? Math.max.apply(null, temps) : setpoint;
+    if (Number.isFinite(setpoint)) {
+      tMin = Math.min(tMin, setpoint);
+      tMax = Math.max(tMax, setpoint);
+    }
+    if (!Number.isFinite(tMin) || !Number.isFinite(tMax)) { tMin = 0; tMax = 1; }
+    if (tMax - tMin < 1) { tMin -= 0.5; tMax += 0.5; }
+    else { const pad = (tMax - tMin) * 0.12; tMin -= pad; tMax += pad; }
+    let hMin = 0, hMax = 100;
+    if (hums.length) {
+      hMin = Math.min.apply(null, hums);
+      hMax = Math.max.apply(null, hums);
+      if (hMax - hMin < 4) { hMin -= 2; hMax += 2; }
+      else { const pad = (hMax - hMin) * 0.12; hMin -= pad; hMax += pad; }
+    }
+    const epochs = list.map((p) => p.epoch).filter((v) => v > 1700000000);
+    const eMin = epochs.length ? Math.min.apply(null, epochs) : 0;
+    const eMax = epochs.length ? Math.max.apply(null, epochs) : 0;
+    const timed = epochs.length === list.length && eMax > eMin;
+    const xOf = (p, i) => L + (timed ? (p.epoch - eMin) / (eMax - eMin) : (list.length === 1 ? 0.5 : i / (list.length - 1))) * plotW;
+    const yOf = (v, min, max) => T + (1 - (v - min) / (max - min)) * plotH;
+    function el(name, attrs, text) {
+      const node = document.createElementNS(ns, name);
+      Object.keys(attrs).forEach((key) => node.setAttribute(key, attrs[key]));
+      if (text != null) node.textContent = text;
+      return node;
+    }
+    svg.appendChild(el("line", { x1: L, y1: T, x2: L, y2: T + plotH, stroke: "#1c1915", "stroke-width": 1.2 }));
+    svg.appendChild(el("line", { x1: L, y1: T + plotH, x2: L + plotW, y2: T + plotH, stroke: "#1c1915", "stroke-width": 1.2 }));
+    if (hums.length) svg.appendChild(el("line", { x1: L + plotW, y1: T, x2: L + plotW, y2: T + plotH, stroke: "#1c1915", "stroke-width": 1.2 }));
+    const tStep = niceStep(tMax - tMin, 4);
+    for (let v = Math.ceil(tMin / tStep) * tStep; v <= tMax + tStep * 0.01; v += tStep) {
+      const y = yOf(v, tMin, tMax);
+      svg.appendChild(el("line", { x1: L, y1: y, x2: L + plotW, y2: y, stroke: "#e4ddd0" }));
+      svg.appendChild(el("text", { x: L - 4, y: y + 3, "text-anchor": "end", "font-size": "10", fill: "#6b655c" }, v.toFixed(tStep < 1 ? 1 : 0).replace(".", ",")));
+    }
+    if (hums.length) {
+      const hStep = niceStep(hMax - hMin, 4);
+      for (let v = Math.ceil(hMin / hStep) * hStep; v <= hMax + hStep * 0.01; v += hStep) {
+        svg.appendChild(el("text", { x: L + plotW + 4, y: yOf(v, hMin, hMax) + 3, "font-size": "10", fill: "#2c6e9b" }, Math.round(v) + "%"));
+      }
+    }
+    svg.appendChild(el("text", { x: 12, y: 12, "font-size": "10", fill: "#9a3b1a" }, "°C"));
+    function line(key, min, max, color) {
+      const pts = [];
+      list.forEach((p, i) => { if (Number.isFinite(p[key])) pts.push(xOf(p, i).toFixed(1) + "," + yOf(p[key], min, max).toFixed(1)); });
+      if (pts.length) svg.appendChild(el("polyline", { points: pts.join(" "), fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    }
+    line("hum", hMin, hMax, "#2c6e9b");
+    line("temp", tMin, tMax, "#9a3b1a");
+    if (Number.isFinite(setpoint)) {
+      const y = yOf(setpoint, tMin, tMax);
+      svg.appendChild(el("line", { x1: L, y1: y, x2: L + plotW, y2: y, stroke: "#9a3b1a", "stroke-width": 1.2, "stroke-dasharray": "4 3" }));
+    }
+    list.forEach((p, i) => {
+      if (!Number.isFinite(p.temp)) return;
+      const c = el("circle", { cx: xOf(p, i).toFixed(1), cy: yOf(p.temp, tMin, tMax).toFixed(1), r: p.relay ? 3.5 : 2.2, fill: p.relay ? "#1f7a46" : "#9a3b1a" });
+      c.appendChild(el("title", {}, axisTime(p.epoch)));
+      svg.appendChild(c);
+    });
+    const marks = [0, Math.floor((list.length - 1) / 2), list.length - 1].filter((v, i, a) => a.indexOf(v) === i);
+    marks.forEach((i) => {
+      svg.appendChild(el("text", { x: xOf(list[i], i), y: H - 8, "text-anchor": "middle", "font-size": "10", fill: "#6b655c" }, axisTime(list[i].epoch)));
+    });
+    return true;
+  }
+  function showLog(data) {
+    const empty = document.getElementById("logEmpty");
+    const chart = document.getElementById("chart");
+    if (!Array.isArray(data.log)) {
+      chart.style.display = "none";
+      empty.hidden = false;
+      empty.textContent = "Il grafico arriva dopo l'aggiornamento del firmware.";
+      return;
+    }
+    const list = data.log.map((row) => ({
+      epoch: Number(row[0]) || 0,
+      temp: Number.isFinite(Number(row[1])) ? Number(row[1]) : null,
+      hum: Number.isFinite(Number(row[2])) ? Number(row[2]) : null,
+      relay: row[3] === 1 || row[3] === true
+    }));
+    const drawn = drawChart(list, Number(data.setpoint));
+    chart.style.display = drawn ? "block" : "none";
+    empty.hidden = drawn;
+    if (!drawn) empty.textContent = "Nessuna lettura ancora.";
+  }
+  function show(data) {
+    document.getElementById("temp").textContent = num(data.temp, 1, " °C");
+    document.getElementById("setpoint").textContent = num(data.setpoint, 1, " °C");
+    document.getElementById("hum").textContent = num(data.humidity, 1, " %");
+    document.getElementById("weather").textContent = num(data.weatherMin, 1, " °C");
+    const on = data.relay === "on" || data.relay === true;
+    const card = document.getElementById("relayCard");
+    card.className = "card relay " + (on ? "on" : "off");
+    document.getElementById("relay").textContent = on ? "ACCESO" : "SPENTO";
+    document.getElementById("reason").textContent = data.reason ? String(data.reason) : "";
+    document.getElementById("time").textContent = data.time ? String(data.time) : "n.d.";
+    document.getElementById("last").textContent = new Date().toLocaleString("it-IT");
+    if (!document.getElementById("setpointIn").value && Number.isFinite(Number(data.setpoint))) {
+      document.getElementById("setpointIn").value = String(data.setpoint).replace(".", ",");
+    }
+    if (!document.getElementById("onTime").value && data.onTime) document.getElementById("onTime").value = data.onTime;
+    if (!document.getElementById("offTime").value && data.offTime) document.getElementById("offTime").value = data.offTime;
+    showLog(data);
+    if (data.cmd) setCmd(String(data.cmd), data.cmd === "Impostazioni salvate" ? "ok" : "bad");
+  }
+  function sendCommand(body) {
+    const pin = document.getElementById("pin").value.trim();
+    if (!/^\d{4}$/.test(pin)) { setCmd("Il PIN è di 4 cifre", "bad"); return; }
+    body.pin = pin;
+    if (!client.connected) { setCmd("Pagina non connessa", "bad"); return; }
+    client.publish(COMMAND, JSON.stringify(body), { qos: 0, retain: false });
+    setCmd("Comando inviato. Attendi conferma.", "wait");
+  }
+  function parseNum(text) {
+    const n = Number(String(text).trim().replace(",", "."));
+    if (!Number.isFinite(n)) throw new Error("Numero non valido");
+    return n;
+  }
+
+  document.getElementById("form-heat").addEventListener("submit", function (event) {
+    event.preventDefault();
+    try {
+      const body = {
+        setpoint: parseNum(document.getElementById("setpointIn").value),
+        onTime: document.getElementById("onTime").value,
+        offTime: document.getElementById("offTime").value
+      };
+      const nextPin = document.getElementById("newPin").value.trim();
+      if (nextPin) body.newPin = nextPin;
+      sendCommand(body);
+      document.getElementById("newPin").value = "";
+    } catch (error) {
+      setCmd(error.message, "bad");
+    }
+  });
+  document.getElementById("form-loc").addEventListener("submit", function (event) {
+    event.preventDefault();
+    try {
+      sendCommand({
+        setLocation: true,
+        latitude: parseNum(document.getElementById("latitude").value),
+        longitude: parseNum(document.getElementById("longitude").value)
+      });
+    } catch (error) {
+      setCmd(error.message, "bad");
+    }
+  });
+  document.getElementById("clearLoc").addEventListener("click", function () {
+    sendCommand({ clearLocation: true });
+  });
+  document.getElementById("forceOn").addEventListener("click", function () { sendCommand({ on: true }); });
+  document.getElementById("forceOff").addEventListener("click", function () { sendCommand({ on: false }); });
+
+  const client = mqtt.connect("wss://broker.hivemq.com:8884/mqtt", {
+    clientId: "lettura-sommaia-" + Math.random().toString(16).slice(2, 8),
+    clean: true,
+    reconnectPeriod: 5000
+  });
+  client.on("connect", function () {
+    setConn("Connesso", "ok");
+    client.subscribe(TOPIC);
+  });
+  client.on("reconnect", function () { setConn("Riconnessione…", "wait"); });
+  client.on("offline", function () { setConn("Non connesso", "bad"); });
+  client.on("error", function () { setConn("Broker non raggiungibile", "bad"); });
+  client.on("message", function (topic, message) {
+    if (topic !== TOPIC) return;
+    try {
+      show(JSON.parse(message.toString()));
+    } catch (error) {
+      setConn("Messaggio non valido", "bad");
+    }
+  });
+</script>
+</body>
+</html>
