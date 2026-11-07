@@ -1,23 +1,3 @@
-Il registro delle letture lo vorrei in forma grafica con assi cartesiani
-Il registro è un grafico con gli assi. In orizzontale c’è l’ora, a sinistra la temperatura in °C, a destra l’umidità. La linea tratteggiata è il setpoint attuale e il punto pieno indica il relè acceso. Sono le ultime 24 letture salvate sull’ESP32.
-
-In ufficio, dopo aver caricato il firmware della 
-PR #4 (commit b7b64a4), apri http://aerotermo.local/ dalla Wi-Fi Fritz e scorri fino a Registro. È la pagina da dare ai dipendenti.
-
-Sulla pagina pubblica che hai già aperto il grafico non c’è ancora: da qui non posso aggiornare quel repository. Le impostazioni da fuori (setpoint, orari, posizione, forzatura) sono nella pagina nuova e chiedono il PIN, lo stesso dell’ufficio. Senza il PIN giusto l’apparecchio non cambia nulla.
-
-Per sostituire la pagina pubblica:
-
-Apri il file già creato: docs/aerotermo.html.
-
-A destra del nome del file premi l’icona della matita (Edit). Non è tra Issues e Pull requests.
-
-Nel riquadro grande seleziona tutto il testo, cancellalo e incolla il codice qui sotto.
-
-In basso lascia Commit directly to the main branch e premi Commit changes.
-
-Dopo un minuto ricarica alessiodc8.github.io/esp32-dashboard2/aerotermo.html. Il grafico e i comandi restano vuoti finché l’ESP32 non esegue quel firmware. Il PIN di fabbrica è 1234: sul broker pubblico viaggia in chiaro, quindi conviene cambiarlo e non riusarlo altrove. Ai dipendenti non dare questo indirizzo.
-
 <!DOCTYPE html>
 <html lang="it">
 <head>
