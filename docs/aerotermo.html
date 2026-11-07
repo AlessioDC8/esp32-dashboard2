@@ -77,6 +77,7 @@
   <p class="kicker">Decora · Sommaia</p>
   <h1>Aerotermo</h1>
   <p class="lead">Stato e impostazioni, anche fuori dall'ufficio.</p>
+  <p class="note">Programma impostato. Lunedì–venerdì accensione prevista alle ore 06:00 se la previsione delle 06:00 è superiore a 5 °C, e alle ore 05:00 se è inferiore a 5 °C. Spegnimento alle 17:30. Sabato e domenica il riscaldamento è spento. L'umidità è sempre attiva: acceso sopra il 64%, spento a 62% o meno.</p>
   <p class="note">Le modifiche chiedono il PIN. In ufficio i dipendenti usano la pagina sulla Wi-Fi Fritz, non questo indirizzo.</p>
   <p id="conn" class="conn wait">Connessione in corso…</p>
   <div class="pair">
@@ -95,7 +96,7 @@
       <p id="hum" class="value">—</p>
     </div>
     <div class="card">
-      <p class="label">Minima mattutina</p>
+      <p class="label">Previsione delle 06:00</p>
       <p id="weather" class="value">—</p>
     </div>
   </div>
@@ -109,6 +110,13 @@
     <p id="time" class="value">—</p>
     <p class="hint">Ultimo messaggio: <span id="last">—</span></p>
   </div>
+  <section>
+    <h2>Programma</h2>
+    <p>Lunedì–venerdì l'aerotermo segue la temperatura dalle 06:00 alle 17:30: acceso sotto il setpoint, spento quando la raggiunge. Se la previsione delle 06:00 è sotto 5 °C, l'accensione passa alle 05:00, un'ora prima. Sabato e domenica il riscaldamento resta spento.</p>
+    <p>L'umidità è sempre attiva, anche sabato e domenica: acceso sopra il 64% di umidità relativa, spento a 62% o meno.</p>
+    <p id="programNow" class="value">In attesa dello stato di oggi.</p>
+    <p id="programNext" class="hint"></p>
+  </section>
   <section>
     <h2>Registro</h2>
     <p class="label">Asse orizzontale: ora. Asse sinistro: temperatura °C. Asse destro: umidità %. La linea tratteggiata è il setpoint attuale. Il punto pieno è il relè acceso.</p>
@@ -173,8 +181,38 @@
 <script>
   const TOPIC = "esp32/decora/sommaia/stato";
   const COMMAND = "esp32/decora/sommaia/comando";
+  const FORM_KEY = "aerotermo-sommaia-impostazioni";
+  const FORM_IDS = ["pin", "setpointIn", "onTime", "offTime", "latitude", "longitude"];
   const conn = document.getElementById("conn");
   const cmd = document.getElementById("cmd");
+
+  function saveForm() {
+    const data = {};
+    FORM_IDS.forEach(function (id) {
+      data[id] = document.getElementById(id).value;
+    });
+    localStorage.setItem(FORM_KEY, JSON.stringify(data));
+  }
+
+  function loadForm() {
+    let data = {};
+    try {
+      data = JSON.parse(localStorage.getItem(FORM_KEY) || "{}");
+    } catch (error) {
+      data = {};
+    }
+    FORM_IDS.forEach(function (id) {
+      if (data[id]) document.getElementById(id).value = data[id];
+    });
+  }
+
+  function remember(id, value) {
+    const field = document.getElementById(id);
+    if (!field.value && value) {
+      field.value = value;
+      saveForm();
+    }
+  }
 
   function setConn(text, kind) {
     conn.textContent = text;
@@ -308,13 +346,29 @@
     document.getElementById("reason").textContent = data.reason ? String(data.reason) : "";
     document.getElementById("time").textContent = data.time ? String(data.time) : "n.d.";
     document.getElementById("last").textContent = new Date().toLocaleString("it-IT");
-    if (!document.getElementById("setpointIn").value && Number.isFinite(Number(data.setpoint))) {
-      document.getElementById("setpointIn").value = String(data.setpoint).replace(".", ",");
-    }
-    if (!document.getElementById("onTime").value && data.onTime) document.getElementById("onTime").value = data.onTime;
-    if (!document.getElementById("offTime").value && data.offTime) document.getElementById("offTime").value = data.offTime;
+    if (Number.isFinite(Number(data.setpoint))) remember("setpointIn", String(data.setpoint).replace(".", ","));
+    if (data.onTime) remember("onTime", data.onTime);
+    if (data.offTime) remember("offTime", data.offTime);
     showLog(data);
+    showProgram(data);
     if (data.cmd) setCmd(String(data.cmd), data.cmd === "Impostazioni salvate" ? "ok" : "bad");
+  }
+  function showProgram(data) {
+    const now = document.getElementById("programNow");
+    const next = document.getElementById("programNext");
+    if (!data.window && !data.effectiveOn) {
+      now.textContent = "Il dettaglio di oggi arriva dopo l'aggiornamento del firmware. Le regole qui sopra sono quelle dell'apparecchio.";
+      next.textContent = "";
+      return;
+    }
+    let text = data.window ? String(data.window) : "";
+    if (data.earlyStart) {
+      text += " Accensione anticipata alle " + (data.effectiveOn || "05:00") + " perché alle 06:00 sono previsti " + num(data.weatherMin, 1, " °C") + ".";
+    } else if (data.weatherMin !== undefined && data.weatherMin !== null) {
+      text += " Previsione delle 06:00: " + num(data.weatherMin, 1, " °C") + ". Accensione alle " + (data.effectiveOn || data.onTime || "06:00") + ".";
+    }
+    now.textContent = text || "Programma in attesa dell'orologio.";
+    next.textContent = data.next ? String(data.next) : "";
   }
   function sendCommand(body) {
     const pin = document.getElementById("pin").value.trim();
@@ -359,10 +413,18 @@
     }
   });
   document.getElementById("clearLoc").addEventListener("click", function () {
+    document.getElementById("latitude").value = "";
+    document.getElementById("longitude").value = "";
+    saveForm();
     sendCommand({ clearLocation: true });
   });
   document.getElementById("forceOn").addEventListener("click", function () { sendCommand({ on: true }); });
   document.getElementById("forceOff").addEventListener("click", function () { sendCommand({ on: false }); });
+  FORM_IDS.forEach(function (id) {
+    document.getElementById(id).addEventListener("input", saveForm);
+    document.getElementById(id).addEventListener("change", saveForm);
+  });
+  loadForm();
 
   const client = mqtt.connect("wss://broker.hivemq.com:8884/mqtt", {
     clientId: "lettura-sommaia-" + Math.random().toString(16).slice(2, 8),
